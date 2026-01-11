@@ -1,30 +1,52 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { WebSocketServer } from 'ws';
+import WebSocket, { WebSocketServer as WSWebSocketServer } from 'ws';
 
-const clients = new Set<any>();
+const WebSocketServer = (WebSocket as any).Server || WSWebSocketServer;
 
-export default function handler(req: NextApiRequest, res: any) {
-  if (req.method !== 'GET') {
-    res.status(405).end();
+type NextApiResponseWithSocket = NextApiResponse & {
+  socket: any & { server: any & { ws?: any } };
+};
+
+const clients = new Set<WebSocket>();
+
+export default function handler(req: NextApiRequest, res: NextApiResponseWithSocket) {
+  if (res.socket.server.ws) {
+    res.end();
     return;
   }
 
-  const { socket, head } = res as any;
-  if (!socket || !head) {
-    res.status(400).end('Not a WebSocket');
-    return;
-  }
+  const server = res.socket.server;
+  const wss = new WebSocketServer({ server });
 
-  const wss = new WebSocketServer({ noServer: true });
-  wss.handleUpgrade(socket, req as any, head, (ws) => {
+  wss.on('connection', (ws: WebSocket) => {
     clients.add(ws);
-    ws.on('message', (message) => {
+
+    ws.on('message', (data: WebSocket.RawData) => {
+      // data can be Buffer, string, ArrayBuffer, etc.
+      const text = typeof data === 'string' ? data : data.toString('utf8');
+
+      // optionally validate JSON once here
+      let parsed: any;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        // ignore non-JSON messages
+        return;
+      }
+
+      // re-broadcast as the same text we received
       clients.forEach((client) => {
-        if (client !== ws && client.readyState === 1) {
-          client.send(message.toString());
+        if (client !== ws && (client as any).readyState === (ws as any).OPEN) {
+          client.send(text);
         }
       });
     });
-    ws.on('close', () => clients.delete(ws));
+
+    ws.on('close', () => {
+      clients.delete(ws);
+    });
   });
+
+  res.socket.server.ws = wss;
+  res.end();
 }

@@ -2,12 +2,14 @@
 
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
-import { useEffect, useState, useRef  } from 'react';
+import { useEffect, useState, useRef } from 'react';
 
 type DocType = {
   _id: string;
   content: any;
 };
+
+const myUserId = 'user-' + Math.random().toString(36).slice(2);
 
 export default function Editor() {
   const [loading, setLoading] = useState(true);
@@ -22,13 +24,13 @@ export default function Editor() {
       const text = editor.getText();
       const words = text.trim() ? text.trim().split(/\s+/).length : 0;
       setWordCount(words);
-      
+
       const json = editor.getJSON();
       localStorage.setItem('editor-content', JSON.stringify(json));
-      
+
       if (socketRef.current?.readyState === WebSocket.OPEN) {
         socketRef.current.send(
-            JSON.stringify({ type: 'content', content: json }),
+          JSON.stringify({ type: 'content', content: json }),
         );
       }
     },
@@ -39,14 +41,12 @@ export default function Editor() {
     if (!editor) return;
 
     const load = async () => {
-      // 1) Try server
       const res = await fetch('/api/document');
       const data: DocType = await res.json();
 
       if (data.content) {
         editor.commands.setContent(data.content);
       } else {
-        // 2) fallback to localStorage
         const stored = localStorage.getItem('editor-content');
         if (stored) {
           editor.commands.setContent(JSON.parse(stored));
@@ -62,32 +62,52 @@ export default function Editor() {
     load();
   }, [editor]);
 
-  // WebSocket connection for real-time collaboration
+  // WebSocket connection to separate server
   useEffect(() => {
-  if (!editor) return;
+    if (!editor) return;
 
-  // ensure WS route is initialized
-  fetch('/api/ws');
+    const ws = new WebSocket('ws://localhost:4000'); // <-- changed URL
+    socketRef.current = ws;
 
-  const ws = new WebSocket(`ws://localhost:3000/api/ws`);
-  socketRef.current = ws;
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data as string);
 
-  ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data);
+      if (msg.type === 'content') {
+        editor.commands.setContent(msg.content);
+      }
 
-    if (msg.type === 'content') {
-      // apply remote document (naive; will be refined)
-      editor.commands.setContent(msg.content);
-    }
-    if (msg.type === 'cursor' && msg.userId !== myUserId) {
-      // later: render remote cursor positions
-    }
-  };
+      if (msg.type === 'cursor' && msg.userId !== myUserId) {
+        // TODO: render remote cursor positions
+      }
+    };
 
-  return () => {
-    ws.close();
-  };
-}, [editor]);
+    return () => {
+      ws.close();
+    };
+  }, [editor]);
+
+  // Broadcast cursor position
+  useEffect(() => {
+    if (!editor) return;
+
+    const updateCursor = () => {
+      const sel = editor.state.selection;
+      const from = sel.from;
+      const to = sel.to;
+
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        socketRef.current.send(
+          JSON.stringify({ type: 'cursor', from, to, userId: myUserId }),
+        );
+      }
+    };
+
+    editor.on('selectionUpdate', updateCursor);
+
+    return () => {
+      editor.off('selectionUpdate', updateCursor);
+    };
+  }, [editor]);
 
   if (!editor || loading) return <div>Loading editor...</div>;
 
